@@ -61,11 +61,11 @@ extern const bool useCloudRing = true; // if true, ang_res_y and ang_bottom are 
 
 // VLP-16
 extern const int N_SCAN = 16;
-extern const int Horizon_SCAN = 1800;
-extern const float ang_res_x = 0.2;
-extern const float ang_res_y = 2.0;
+extern const int Horizon_SCAN = 1800; // number of points from one laser of one scan
+extern const float ang_res_x = 0.2;   // angle resolution of horizon
+extern const float ang_res_y = 2.0;   // angle resolution of vertical
 extern const float ang_bottom = 15.0+0.1;
-extern const int groundScanInd = 7;
+extern const int groundScanInd = 7; // 表示地面需要的线圈数
 
 // HDL-32E
 // extern const int N_SCAN = 32;
@@ -149,6 +149,8 @@ struct by_value{
 
 /*
     * A point cloud type that has "ring" channel
+    这里定义了一种包含ring_id的点云数据类型，velodyne的激光雷达是有这个数据的，其它厂商的不一定有;
+    区别于laser_id，ring_id是指从最下面的激光线依次向上递增的线号（0-15 for VLP-16）
     */
 struct PointXYZIR
 {
