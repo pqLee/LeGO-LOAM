@@ -32,6 +32,12 @@
 //   T. Shan and B. Englot. LeGO-LOAM: Lightweight and Ground-Optimized Lidar Odometry and Mapping on Variable Terrain
 //      IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS). October 2018.
 
+/*
+    总体流程：订阅点云数据回调处理 -> 点云转换到pcl预处理 ->
+             截取一帧激光数据 -> 投影映射到图像 -> 地面移除 ->
+             点云分割 -> 发布点云数据 -> 重置参数;
+*/
+
 #include "utility.h"
 
 class ImageProjection{
@@ -56,6 +62,7 @@ private:
     pcl::PointCloud<PointType>::Ptr fullCloud; // projected velodyne raw cloud, but saved in the form of 1-D matrix
     pcl::PointCloud<PointType>::Ptr fullInfoCloud; // same as fullCloud, but with intensity - range
 
+    // 不同分割部分点云存储
     pcl::PointCloud<PointType>::Ptr groundCloud;
     pcl::PointCloud<PointType>::Ptr segmentedCloud;
     pcl::PointCloud<PointType>::Ptr segmentedCloudPure;
@@ -181,15 +188,15 @@ public:
     void cloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg){
 
         // 1. Convert ros message to pcl point cloud
-        copyPointCloud(laserCloudMsg);
+        copyPointCloud(laserCloudMsg);  // 使用pcl库函数
         // 2. Start and end angle of a scan
-        findStartEndAngle();
+        findStartEndAngle();   // 一圈数据的角度差，使用atan2计算;2.注意计算结果的范围合理性
         // 3. Range image projection
-        projectPointCloud();
+        projectPointCloud();   // 将激光雷达数据投影成一个16x1800（依雷达角分辨率而定）的点云阵列
         // 4. Mark ground points
-        groundRemoval();
+        groundRemoval();       // 根据上下两线之间点的位置计算两线之间俯仰角判断，小于10度则为地面点
         // 5. Point cloud segmentation
-        cloudSegmentation();
+        cloudSegmentation();   // 首先对点云进行聚类标记，根据标签进行对应点云块存储
         // 6. Publish all clouds
         publishCloud();
         // 7. Reset parameters for next iteration
@@ -208,6 +215,7 @@ public:
         segMsg.orientationDiff = segMsg.endOrientation - segMsg.startOrientation;
     }
 
+    // 将3D point cloud投影映射到2D range image
     void projectPointCloud(){
         // range image projection
         float verticalAngle, horizonAngle, range;
@@ -240,7 +248,7 @@ public:
 
             if (columnIdn < 0 || columnIdn >= Horizon_SCAN)
                 continue;
-
+            // 确定深度值：（注意数据的有效范围）
             range = sqrt(thisPoint.x * thisPoint.x + thisPoint.y * thisPoint.y + thisPoint.z * thisPoint.z);
             if (range < sensorMinimumRange)
                 continue;
@@ -256,7 +264,7 @@ public:
         }
     }
 
-
+    // 地面去除
     void groundRemoval(){
         size_t lowerInd, upperInd;
         float diffX, diffY, diffZ, angle;
@@ -266,7 +274,7 @@ public:
         //  1, ground
         for (size_t j = 0; j < Horizon_SCAN; ++j){
             for (size_t i = 0; i < groundScanInd; ++i){
-
+                // groundScanInd定义打到地面上激光线的数目
                 lowerInd = j + ( i )*Horizon_SCAN;
                 upperInd = j + (i+1)*Horizon_SCAN;
 
@@ -282,7 +290,8 @@ public:
                 diffZ = fullCloud->points[upperInd].z - fullCloud->points[lowerInd].z;
 
                 angle = atan2(diffZ, sqrt(diffX*diffX + diffY*diffY) ) * 180 / M_PI;
-
+                
+                // 垂直相邻两点俯仰角小于10度就判定为地面点
                 if (abs(angle - sensorMountAngle) <= 10){
                     groundMat.at<int8_t>(i,j) = 1;
                     groundMat.at<int8_t>(i+1,j) = 1;
@@ -309,12 +318,13 @@ public:
         }
     }
 
+    // groundMat: 地面点标识矩阵，-1表示该点无法判断，0表示非地面点，1表示地面点
     void cloudSegmentation(){
         // segmentation process
         for (size_t i = 0; i < N_SCAN; ++i)
             for (size_t j = 0; j < Horizon_SCAN; ++j)
                 if (labelMat.at<int>(i,j) == 0)
-                    labelComponents(i, j);
+                    labelComponents(i, j);   // 聚类操作
 
         int sizeOfSegCloud = 0;
         // extract segmented cloud for lidar odometry
@@ -367,6 +377,8 @@ public:
         }
     }
 
+    // 局部特征检测聚类，平面点与边缘点
+    // labelCount: 表示该点属于哪个label的索引
     void labelComponents(int row, int col){
         // use std::queue std::vector std::deque will slow the program down greatly
         float d1, d2, alpha, angle;
