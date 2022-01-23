@@ -32,6 +32,12 @@
 //   T. Shan and B. Englot. LeGO-LOAM: Lightweight and Ground-Optimized Lidar Odometry and Mapping on Variable Terrain
 //      IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS). October 2018.
 
+/*
+  总体流程：	
+  	（特征提取部分）订阅传感器数据->运动畸变去除->曲率计算->去除瑕点->提取边、平面特征->发布特征点云；
+	（特征关联部分）将IMU信息作为先验->根据线特征、面特征计算位姿变换->联合IMU数据进行位姿更新->发布里程计信息
+*/
+
 #include "utility.h"
 
 class FeatureAssociation{
@@ -389,6 +395,8 @@ public:
         p->z = z5 + imuShiftFromStartZCur;
     }
 
+    // IMU数据处理
+    // 单帧IMU在全局坐标系下的位移、速度、角速度
     void AccumulateIMUShiftAndRotation()
     {
         float roll = imuRoll[imuPointerLast];
@@ -397,7 +405,7 @@ public:
         float accX = imuAccX[imuPointerLast];
         float accY = imuAccY[imuPointerLast];
         float accZ = imuAccZ[imuPointerLast];
-
+	// IMU坐标系到世界坐标系
         float x1 = cos(roll) * accX - sin(roll) * accY;
         float y1 = sin(roll) * accX + cos(roll) * accY;
         float z1 = accZ;
@@ -410,6 +418,7 @@ public:
         accY = y2;
         accZ = -sin(yaw) * x2 + cos(yaw) * z2;
 
+	// IMU 测量周期
         int imuPointerBack = (imuPointerLast + imuQueLength - 1) % imuQueLength;
         double timeDiff = imuTime[imuPointerLast] - imuTime[imuPointerBack];
         if (timeDiff < scanPeriod) {
@@ -434,11 +443,13 @@ public:
         tf::Quaternion orientation;
         tf::quaternionMsgToTF(imuIn->orientation, orientation);
         tf::Matrix3x3(orientation).getRPY(roll, pitch, yaw);
-
+	    
+	// 去除IMU重力加速度影响、同时进行坐标轴变换
         float accX = imuIn->linear_acceleration.y - sin(roll) * cos(pitch) * 9.81;
         float accY = imuIn->linear_acceleration.z - cos(roll) * cos(pitch) * 9.81;
         float accZ = imuIn->linear_acceleration.x + sin(pitch) * 9.81;
 
+	// 保存欧拉角、线加速度、角速度
         imuPointerLast = (imuPointerLast + 1) % imuQueLength;
 
         imuTime[imuPointerLast] = imuIn->header.stamp.toSec();
@@ -488,6 +499,7 @@ public:
         newSegmentedCloudInfo = true;
     }
 
+    // 使用IMU数据插值，去除运动畸变
     void adjustDistortion()
     {
         bool halfPassed = false;
@@ -501,6 +513,7 @@ public:
             point.y = segmentedCloud->points[i].z;
             point.z = segmentedCloud->points[i].x;
 
+	    // 调整点所在的位置
             float ori = -atan2(point.x, point.z);
             if (!halfPassed) {
                 if (ori < segInfo.startOrientation - M_PI / 2)
@@ -519,12 +532,14 @@ public:
                     ori -= 2 * M_PI;
             }
 
+	    // 保留各点的相对时间
             float relTime = (ori - segInfo.startOrientation) / segInfo.orientationDiff;
             point.intensity = int(segmentedCloud->points[i].intensity) + scanPeriod * relTime;
 
             if (imuPointerLast >= 0) {
                 float pointTime = relTime * scanPeriod;
                 imuPointerFront = imuPointerLastIteration;
+		// 与IMU时间戳对齐
                 while (imuPointerFront != imuPointerLast) {
                     if (timeScanCur + pointTime < imuTime[imuPointerFront]) {
                         break;
@@ -533,6 +548,7 @@ public:
                 }
 
                 if (timeScanCur + pointTime > imuTime[imuPointerFront]) {
+		    // IMU数据比激光早且无后边数据，无法插值
                     imuRollCur = imuRoll[imuPointerFront];
                     imuPitchCur = imuPitch[imuPointerFront];
                     imuYawCur = imuYaw[imuPointerFront];
@@ -544,7 +560,7 @@ public:
                     imuShiftXCur = imuShiftX[imuPointerFront];
                     imuShiftYCur = imuShiftY[imuPointerFront];
                     imuShiftZCur = imuShiftZ[imuPointerFront];   
-                } else {
+                } else {  //IMU插值，角度、速度、位移
                     int imuPointerBack = (imuPointerFront + imuQueLength - 1) % imuQueLength;
                     float ratioFront = (timeScanCur + pointTime - imuTime[imuPointerBack]) 
                                                      / (imuTime[imuPointerFront] - imuTime[imuPointerBack]);
@@ -608,8 +624,8 @@ public:
 
                     updateImuRollPitchYawStartSinCos();
                 } else {
-                    VeloToStartIMU();
-                    TransformToStartIMU(&point);
+                    VeloToStartIMU(); //速度投影到初始时刻
+                    TransformToStartIMU(&point); //点的坐标变换到初始时刻
                 }
             }
             segmentedCloud->points[i] = point;
@@ -618,6 +634,7 @@ public:
         imuPointerLastIteration = imuPointerLast;
     }
 
+    // 计算点的曲率，并将特殊情况的点标记为瑕点，不参与后续特征提取。
     void calculateSmoothness()
     {
         int cloudSize = segmentedCloud->points.size();
@@ -677,6 +694,7 @@ public:
         }
     }
 
+    // 根据曲率阈值，提取边特征点、平面特征点，降采样处理之后发布
     void extractFeatures()
     {
         cornerPointsSharp->clear();
@@ -687,7 +705,7 @@ public:
         for (int i = 0; i < N_SCAN; i++) {
 
             surfPointsLessFlatScan->clear();
-
+	    // 将一帧点云range-image按照行平均分为6份
             for (int j = 0; j < 6; j++) {
 
                 int sp = (segInfo.startRingIndex[i] * (6 - j)    + segInfo.endRingIndex[i] * j) / 6;
@@ -701,6 +719,7 @@ public:
                 int largestPickedNum = 0;
                 for (int k = ep; k >= sp; k--) {
                     int ind = cloudSmoothness[k].ind;
+		    //边点2个，次边点18个
                     if (cloudNeighborPicked[ind] == 0 &&
                         cloudCurvature[ind] > edgeThreshold &&
                         segInfo.segmentedCloudGroundFlag[ind] == false) {
@@ -718,6 +737,7 @@ public:
                         }
 
                         cloudNeighborPicked[ind] = 1;
+			//特征点前后5个若有距离大于阈值的可以不用标记，否则标记为非特征点
                         for (int l = 1; l <= 5; l++) {
                             int columnDiff = std::abs(int(segInfo.segmentedCloudColInd[ind + l] - segInfo.segmentedCloudColInd[ind + l - 1]));
                             if (columnDiff > 10)
@@ -768,6 +788,7 @@ public:
                     }
                 }
 
+		//未被标记的点以及上述平面点作为次平面点
                 for (int k = sp; k <= ep; k++) {
                     if (cloudLabel[k] <= 0) {
                         surfPointsLessFlatScan->push_back(segmentedCloud->points[k]);
@@ -822,40 +843,10 @@ public:
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+/***** 
+	特征关联程序
+	将当前时刻保存的IMU数据作为先验信息（角度、位移）
+*/
 
     void TransformToStart(PointType const * const pi, PointType * const po)
     {
@@ -1663,6 +1654,9 @@ public:
         }
     }
 
+    // 查找平面特征进行匹配，寻找最近邻三点构成平面，构建点面距离最小二乘求解位姿（高斯牛顿）；
+    // 查找线特征进行匹配，寻找两点构成直线，构建点线距离最小二乘求解位姿（高斯牛顿）。
+    // 注：默认Lidar坐标系是右下前
     void updateTransformation(){
 
         if (laserCloudCornerLastNum < 10 || laserCloudSurfLastNum < 100)
@@ -1676,6 +1670,7 @@ public:
 
             if (laserCloudOri->points.size() < 10)
                 continue;
+	    // 通过面特征匹配计算变换矩阵(z,roll,pitch)
             if (calculateTransformationSurf(iterCount1) == false)
                 break;
         }
@@ -1685,15 +1680,17 @@ public:
             laserCloudOri->clear();
             coeffSel->clear();
 
-            findCorrespondingCornerFeatures(iterCount2);
+            findCorrespondingCornerFeatures(iterCount2); // 找对应的特征线，计算协方差矩阵
 
             if (laserCloudOri->points.size() < 10)
                 continue;
+	    // 通过线特征匹配结合面特征得出的变换矩阵计算变换矩阵(x,y,yaw)
             if (calculateTransformationCorner(iterCount2) == false)
                 break;
         }
     }
 
+    // 将前后两帧位姿累加，获得对第一帧的位姿，同时从局部坐标系转换到全局坐标系，加入IMU数据更新出位姿，发布里程计信息、tf变换、点云。
     void integrateTransformation(){
         float rx, ry, rz, tx, ty, tz;
         AccumulateRotation(transformSum[0], transformSum[1], transformSum[2], 
@@ -1830,13 +1827,13 @@ public:
         /**
         	1. Feature Extraction
         */
-        adjustDistortion();
+        adjustDistortion();      // 去运动畸变
 
-        calculateSmoothness();
+        calculateSmoothness();   // 计算曲率，以相邻左右五个点计算
 
-        markOccludedPoints();
+        markOccludedPoints();    // 标记瑕点，相邻但距离较远的点（平行点被误判为平面点的情况），以及邻域距离变化较大的点（遮挡点被误判为边点的情况）
 
-        extractFeatures();
+        extractFeatures();       // 特征提取
 
         publishCloud(); // cloud for visualization
 	
