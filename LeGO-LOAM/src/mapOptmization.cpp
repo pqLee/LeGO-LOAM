@@ -31,6 +31,12 @@
 //     Robotics: Science and Systems Conference (RSS). Berkeley, CA, July 2014.
 //   T. Shan and B. Englot. LeGO-LOAM: Lightweight and Ground-Optimized Lidar Odometry and Mapping on Variable Terrain
 //      IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS). October 2018.
+/***
+	整体功能分为回环检测、可视化以及位姿全局优化，核心是位姿优化。
+	主体流程：订阅特征提取后的点云、里程计数据 -> 计算当前姿态优化的初始值 -> 提取局部关键帧 -> 降采样 -> 
+	scan-to-map地图优化（线特征、面特征、L-M） -> 保存关键帧与因子图优化 -> 闭环检测 -> 发布TF变换、点云
+*/
+
 #include "utility.h"
 
 #include <gtsam/geometry/Rot3.h>
@@ -1326,10 +1332,11 @@ public:
         return false;
     }
 
+    // 边特征、面特征优化
     void scan2MapOptimization(){
 
         if (laserCloudCornerFromMapDSNum > 10 && laserCloudSurfFromMapDSNum > 100) {
-
+	    // 来源于recent（闭环）或surrounding（无闭环）
             kdtreeCornerFromMap->setInputCloud(laserCloudCornerFromMapDS);
             kdtreeSurfFromMap->setInputCloud(laserCloudSurfFromMapDS);
 
@@ -1338,9 +1345,10 @@ public:
                 laserCloudOri->clear();
                 coeffSel->clear();
 
-                cornerOptimization(iterCount);
-                surfOptimization(iterCount);
+                cornerOptimization(iterCount);  // 边特征优化
+                surfOptimization(iterCount);    // 面特征优化
 
+		// LM优化
                 if (LMOptimization(iterCount) == true)
                     break;              
             }
@@ -1349,7 +1357,7 @@ public:
         }
     }
 
-
+    // 保存关键帧和因子图优化
     void saveKeyFramesAndFactor(){
 
         currentRobotPosPoint.x = transformAftMapped[3];
@@ -1373,6 +1381,7 @@ public:
          * update grsam graph
          */
         if (cloudKeyPoses3D->points.empty()){
+	    // 刚刚初始化，增加PriorFactor因子
             gtSAMgraph.add(PriorFactor<Pose3>(0, Pose3(Rot3::RzRyRx(transformTobeMapped[2], transformTobeMapped[0], transformTobeMapped[1]),
                                                        		 Point3(transformTobeMapped[5], transformTobeMapped[3], transformTobeMapped[4])), priorNoise));
             initialEstimate.insert(0, Pose3(Rot3::RzRyRx(transformTobeMapped[2], transformTobeMapped[0], transformTobeMapped[1]),
@@ -1381,6 +1390,7 @@ public:
             	transformLast[i] = transformTobeMapped[i];
         }
         else{
+	    // 非刚刚初始化，从transformLast获得上一次位姿
             gtsam::Pose3 poseFrom = Pose3(Rot3::RzRyRx(transformLast[2], transformLast[0], transformLast[1]),
                                                 Point3(transformLast[5], transformLast[3], transformLast[4]));
             gtsam::Pose3 poseTo   = Pose3(Rot3::RzRyRx(transformAftMapped[2], transformAftMapped[0], transformAftMapped[1]),
@@ -1485,7 +1495,7 @@ public:
     }
 
     void run(){
-
+	// 三种点云、里程计信息时间戳一致
         if (newLaserCloudCornerLast  && std::abs(timeLaserCloudCornerLast  - timeLaserOdometry) < 0.005 &&
             newLaserCloudSurfLast    && std::abs(timeLaserCloudSurfLast    - timeLaserOdometry) < 0.005 &&
             newLaserCloudOutlierLast && std::abs(timeLaserCloudOutlierLast - timeLaserOdometry) < 0.005 &&
@@ -1496,24 +1506,35 @@ public:
 
             std::lock_guard<std::mutex> lock(mtx);
 
+	    // 设置优化的时间间隔为0.3秒
             if (timeLaserOdometry - timeLastProcessing >= mappingProcessInterval) {
 
                 timeLastProcessing = timeLaserOdometry;
 
+		// 将点云转换到世界坐标系
+            	// 根据当前（transformSum）与上次全局优化时的里程计（transformBefMapped）、上次全局优化的结果（transformAftMapped），
+		// 计算当前姿态优化（transformTobeMapped）的初始值
                 transformAssociateToMap();
-
+		
+		//根据当前位置，提取局部关键帧集合以及对应的点云集合
                 extractSurroundingKeyFrames();
 
+		//降采样
                 downsampleCurrentScan();
 
+		//scan-to-map配准优化，获得transformTobeMapped，参考IMU姿态获得最终位姿 transformAftMapped
                 scan2MapOptimization();
 
+		//保存关键帧与因子图优化
                 saveKeyFramesAndFactor();
 
+		//闭环检测
                 correctPoses();
 
+		//发送tf变换
                 publishTF();
 
+		//发布关键帧点云
                 publishKeyPosesAndFrames();
 
                 clearCloud();
@@ -1529,9 +1550,9 @@ int main(int argc, char** argv)
 
     ROS_INFO("\033[1;32m---->\033[0m Map Optimization Started.");
 
-    mapOptimization MO;
+    mapOptimization MO;   // 订阅(特征提取后的)点云、里程计信息
 
-    std::thread loopthread(&mapOptimization::loopClosureThread, &MO);
+    std::thread loopthread(&mapOptimization::loopClosureThread, &MO);   // 闭环检测线程
     std::thread visualizeMapThread(&mapOptimization::visualizeGlobalMapThread, &MO);
 
     ros::Rate rate(200);
@@ -1539,7 +1560,7 @@ int main(int argc, char** argv)
     {
         ros::spinOnce();
 
-        MO.run();
+        MO.run();   // 全局位姿优化
 
         rate.sleep();
     }
