@@ -36,6 +36,10 @@
   总体流程：	
   	（特征提取部分）订阅传感器数据->运动畸变去除->曲率计算->去除瑕点->提取边、平面特征->发布特征点云；
 	（特征关联部分）将IMU信息作为先验->根据线特征、面特征计算位姿变换->联合IMU数据进行位姿更新->发布里程计信息
+	
+	由于已经获取前后两帧的角点和平面点特征点云，因此进行帧间点云匹配，则可获取相邻两帧平移旋转变换，由初始位姿进行累计，从而获得激光里程计信息。
+	lego-loam采用将两次即两种特征点分别匹配，平面匹配和2维位姿匹配。
+	其中LM优化的流程为构建约束方程 -> 约束方程求偏导构建Jaccobian矩阵 -> L-M求解。
 */
 
 #include "utility.h"
@@ -1593,9 +1597,11 @@ public:
         return true;
     }
 
+    // 匹配初始化
+    // 由于激光里程计相临两帧点云进行匹配获取，即当前帧与上一帧进行匹配，故开启slam收到的第一帧点云数据则需要对cloud_last进行赋值，即对上一帧进行记录和存储，不做匹配运算
     void checkSystemInitialization(){
 
-        pcl::PointCloud<PointType>::Ptr laserCloudTemp = cornerPointsLessSharp;
+        pcl::PointCloud<PointType>::Ptr laserCloudTemp = cornerPointsLessSharp; // 第一次last 和 curr 应一样， 即赋初始状态
         cornerPointsLessSharp = laserCloudCornerLast;
         laserCloudCornerLast = laserCloudTemp;
 
@@ -1603,10 +1609,10 @@ public:
         surfPointsLessFlat = laserCloudSurfLast;
         laserCloudSurfLast = laserCloudTemp;
 
-        kdtreeCornerLast->setInputCloud(laserCloudCornerLast);
+        kdtreeCornerLast->setInputCloud(laserCloudCornerLast);  // 初始化KD TREE
         kdtreeSurfLast->setInputCloud(laserCloudSurfLast);
 
-        laserCloudCornerLastNum = laserCloudCornerLast->points.size();
+        laserCloudCornerLastNum = laserCloudCornerLast->points.size();  // 获取两种特征点云个数
         laserCloudSurfLastNum = laserCloudSurfLast->points.size();
 
         sensor_msgs::PointCloud2 laserCloudCornerLast2;
