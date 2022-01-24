@@ -32,9 +32,16 @@
 //   T. Shan and B. Englot. LeGO-LOAM: Lightweight and Ground-Optimized Lidar Odometry and Mapping on Variable Terrain
 //      IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS). October 2018.
 /***
+	前两部分已经完成了一个激光雷达里程计该做的处理（点云预处理，连续帧匹配计算出激光里程计信息）
+	但是这个过程中误差是逐渐累积的，为此我们需要通过回环检测来减小误差
+
 	整体功能分为回环检测、可视化以及位姿全局优化，核心是位姿优化。
 	主体流程：订阅特征提取后的点云、里程计数据 -> 计算当前姿态优化的初始值 -> 提取局部关键帧 -> 降采样 -> 
 	scan-to-map地图优化（线特征、面特征、L-M） -> 保存关键帧与因子图优化 -> 闭环检测 -> 发布TF变换、点云
+	
+	主要采用了两步优化方法：
+	a. scan-to-model的地图优化：mapOptimization::scan2MapOptimization()
+	b. 因子图优化：mapOptimization::saveKeyFramesAndFactor()
 */
 
 #include "utility.h"
@@ -516,6 +523,7 @@ public:
         tZ = transformTobeMapped[5];
     }
 
+    // 工具性质函数
     void pointAssociateToMap(PointType const * const pi, PointType * const po)
     {
         float x1 = cYaw * pi->x - sYaw * pi->y;
@@ -526,6 +534,7 @@ public:
         float y2 = cRoll * y1 - sRoll * z1;
         float z2 = sRoll * y1 + cRoll * z1;
 
+	// 第i帧的点转换到第一帧坐标系下
         po->x = cPitch * x2 + sPitch * z2 + tX;
         po->y = y2 + tY;
         po->z = -sPitch * x2 + cPitch * z2 + tZ;
@@ -548,6 +557,7 @@ public:
         tInZ = tIn->z;
     }
 
+    // 工具性质函数
     pcl::PointCloud<PointType>::Ptr transformPointCloud(pcl::PointCloud<PointType>::Ptr cloudIn){
 	// !!! DO NOT use pcl for point cloud transformation, results are not accurate
         // Reason: unkown
@@ -807,9 +817,11 @@ public:
 
     void loopClosureThread(){
 
+	// 如果参数设置为false，不进行回环检测
         if (loopClosureEnableFlag == false)
             return;
 
+	// 以 1hz 的频率执行回环检测
         ros::Rate rate(1);
         while (ros::ok()){
             rate.sleep();
@@ -1552,8 +1564,8 @@ int main(int argc, char** argv)
 
     mapOptimization MO;   // 订阅(特征提取后的)点云、里程计信息
 
-    std::thread loopthread(&mapOptimization::loopClosureThread, &MO);   // 闭环检测线程
-    std::thread visualizeMapThread(&mapOptimization::visualizeGlobalMapThread, &MO);
+    std::thread loopthread(&mapOptimization::loopClosureThread, &MO);   // 闭环检测线程,按固定的频率进行回环检测、添加约束边
+    std::thread visualizeMapThread(&mapOptimization::visualizeGlobalMapThread, &MO); // 进行地图发布和保存
 
     ros::Rate rate(200);
     while (ros::ok())
