@@ -101,6 +101,12 @@ rosbag play *.bag --clock --topic /velodyne_points /imu/data
 ```
 Notes: Though /imu/data is optinal, it can improve estimation accuracy greatly if provided. Some sample bags can be downloaded from [here](https://github.com/RobustFieldAutonomyLab/jackal_dataset_20170608). 
 
+3. Save the map to PCD file:
+```
+rosbag record /laser_cloud_surround -O pcd_map
+rosrun pcl_ros bag_to_pcd pcd_map.bag /laser_cloud_surround PATH_TO_PCD_FILE
+```
+
 ## New data-set
 
 This dataset, [Stevens data-set](https://github.com/TixiaoShan/Stevens-VLP16-Dataset), is captured using a Velodyne VLP-16, which is mounted on an UGV - Clearpath Jackal, on Stevens Institute of Technology campus. The VLP-16 rotation rate is set to 10Hz. This data-set features over 20K scans and many loop-closures. 
