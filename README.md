@@ -146,3 +146,9 @@ An optimized version of LeGO-LOAM can be found [here](https://github.com/faconti
     + To convert a multi-process application into a single-process / multi-threading one; this makes the algorithm more deterministic and slightly faster.
     + To make it easier and faster to work with rosbags: processing a rosbag should be done at maximum speed allowed by the CPU and in a deterministic way.
     + As a consequence of the previous point, creating unit and regression tests will be easier.
+
+
+## LeGO-LOAM的不足之处
+1、Lego-LOAM有一个显著的缺陷——依赖地面：如果用无人机，那么就难以确定地面了。 当然论文作者提到，对于无人机，则不提取地面点，直接就像LOAM中那样正常提取边缘点和平面点。但是我认为这样算法的核心优势就丢掉了
+2、保存的点云地图是稀疏的特征点地图，这也是此类算法的通病，地图有什么用？——可以用来辅助定位，却不能用来辅助路径规划
+
